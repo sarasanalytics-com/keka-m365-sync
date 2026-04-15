@@ -1,0 +1,12 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+# Run logs contain employee contact info — don't commit
+*.log
+apply.log
+dry-run.log
+# One-time handoff files — keep local only
+pending-admin-updates.md
