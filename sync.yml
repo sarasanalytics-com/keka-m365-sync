@@ -1,0 +1,50 @@
+name: Keka to M365 sync
+
+on:
+  schedule:
+    # 02:30 UTC weekly (Sunday) = 08:00 IST. Adjust as needed.
+    - cron: "30 2 * * 0"
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Actually write changes (otherwise dry-run)"
+        type: boolean
+        default: false
+      only:
+        description: "Limit to a single UPN (optional)"
+        type: string
+        default: ""
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      KEKA_BASE_URL:       ${{ secrets.KEKA_BASE_URL }}
+      KEKA_CLIENT_ID:      ${{ secrets.KEKA_CLIENT_ID }}
+      KEKA_CLIENT_SECRET:  ${{ secrets.KEKA_CLIENT_SECRET }}
+      KEKA_API_KEY:        ${{ secrets.KEKA_API_KEY }}
+      AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      # Scheduled runs: inputs.apply is null -> falsy -> APPLY=false (dry-run).
+      # Manual dispatch: inputs.apply is a real boolean respected by user's input.
+      APPLY: ${{ inputs.apply && 'true' || 'false' }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Run sync
+        run: |
+          if [ -n "${{ inputs.only }}" ]; then
+            python sync.py --verbose --only "${{ inputs.only }}"
+          else
+            python sync.py --verbose
+          fi
