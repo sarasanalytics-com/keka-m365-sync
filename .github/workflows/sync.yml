@@ -1,4 +1,4 @@
-name: Keka → M365 sync
+name: Keka to M365 sync
 
 on:
   schedule:
@@ -27,8 +27,9 @@ jobs:
       AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
       AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      # Scheduled runs are always dry-run. Manual runs respect the input.
-      APPLY: ${{ github.event_name == 'workflow_dispatch' && inputs.apply == true && 'true' || 'false' }}
+      # Scheduled runs: inputs.apply is null -> falsy -> APPLY=false (dry-run).
+      # Manual dispatch: inputs.apply is a real boolean respected by user's input.
+      APPLY: ${{ inputs.apply && 'true' || 'false' }}
 
     steps:
       - uses: actions/checkout@v4
