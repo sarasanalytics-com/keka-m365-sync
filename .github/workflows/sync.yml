@@ -3,7 +3,7 @@ name: Keka to M365 sync
 on:
   schedule:
     # 02:30 UTC daily = 08:00 IST. Adjust as needed.
-    - cron: "30 2 * * *"
+    - cron: "30 2 * * 0"
   workflow_dispatch:
     inputs:
       apply:
