@@ -225,6 +225,10 @@ def diff(desired: dict, current: dict) -> dict:
     changes = {}
     for k, v in desired.items():
         cur = current.get(k)
+        # Graph returns employeeHireDate as full ISO datetime ("2026-01-05T00:00:00Z")
+        # even though we PATCH it as YYYY-MM-DD. Normalize to date-only for comparison.
+        if k == "employeeHireDate" and isinstance(cur, str):
+            cur = cur[:10]
         if isinstance(v, list) and isinstance(cur, list):
             if sorted(map(str, v)) != sorted(map(str, cur)):
                 changes[k] = v
