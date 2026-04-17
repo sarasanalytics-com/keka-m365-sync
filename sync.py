@@ -317,9 +317,16 @@ def main() -> int:
                 try:
                     graph_patch_user(gtok, upn, changes)
                     n_changed += 1
-                except Exception as e:
-                    logging.error("FAIL %s: %s", upn, e)
-                    n_failed += 1
+                except RuntimeError as e:
+                    if "403" in str(e):
+                        # User holds a privileged Entra role — service principal
+                        # with User.ReadWrite.All cannot write admins. Expected;
+                        # HR updates these manually. Don't fail the workflow.
+                        logging.warning("SKIP (admin/no-permission): %s", upn)
+                        n_skipped += 1
+                    else:
+                        logging.error("FAIL %s: %s", upn, e)
+                        n_failed += 1
             else:
                 n_changed += 1  # would-change
 
@@ -335,9 +342,12 @@ def main() -> int:
                         try:
                             graph_set_manager(gtok, upn, mgr_id)
                             n_mgr_changed += 1
-                        except Exception as e:
-                            logging.error("FAIL manager %s: %s", upn, e)
-                            n_failed += 1
+                        except RuntimeError as e:
+                            if "403" in str(e):
+                                logging.warning("SKIP manager (admin/no-permission): %s", upn)
+                            else:
+                                logging.error("FAIL manager %s: %s", upn, e)
+                                n_failed += 1
                     else:
                         logging.warning("manager not in M365: %s", keka_mgr_upn)
                 else:
