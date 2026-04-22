@@ -10,8 +10,12 @@ on:
         description: "Actually write changes (otherwise dry-run)"
         type: boolean
         default: false
+      dl_sync:
+        description: "Also sync Distribution List memberships (requires dl_rules.json)"
+        type: boolean
+        default: false
       only:
-        description: "Limit to a single UPN (optional)"
+        description: "Limit to a single UPN (optional, skips DL sync)"
         type: string
         default: ""
 
@@ -29,7 +33,8 @@ jobs:
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
       # Scheduled runs: inputs.apply is null -> falsy -> APPLY=false (dry-run).
       # Manual dispatch: inputs.apply is a real boolean respected by user's input.
-      APPLY: ${{ inputs.apply && 'true' || 'false' }}
+      APPLY:   ${{ inputs.apply   && 'true' || 'false' }}
+      DL_SYNC: ${{ inputs.dl_sync && 'true' || 'false' }}
 
     steps:
       - uses: actions/checkout@v6
@@ -48,3 +53,4 @@ jobs:
           else
             python sync.py --verbose
           fi
+          # DL_SYNC env var is picked up automatically by sync.py when set to 'true'.

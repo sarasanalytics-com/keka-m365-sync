@@ -205,6 +205,62 @@ def graph_set_manager(token: str, upn: str, manager_id: str) -> None:
     if r.status_code >= 400:
         raise RuntimeError(f"set manager {upn} failed {r.status_code}: {r.text}")
 
+# ---------- Graph (Distribution Lists) ----------
+
+def graph_find_group(token: str, email: str) -> dict | None:
+    """Find a mail-enabled group by primary SMTP address. Returns None if not found."""
+    r = _graph_request(
+        "GET",
+        f"{GRAPH}/groups",
+        token,
+        params={
+            "$filter": f"mail eq '{email}'",
+            "$select": "id,displayName,mail",
+        },
+    )
+    if not r.ok:
+        logging.warning("find group %s: %s", email, r.status_code)
+        return None
+    data = r.json().get("value", [])
+    return data[0] if data else None
+
+
+def graph_get_group_members(token: str, group_id: str) -> list[dict]:
+    """Return all user-type direct members (id + userPrincipalName), handling pagination."""
+    members: list[dict] = []
+    url = f"{GRAPH}/groups/{group_id}/members/microsoft.graph.user"
+    params: dict = {"$select": "id,userPrincipalName", "$top": "999"}
+    while url:
+        r = _graph_request("GET", url, token, params=params)
+        r.raise_for_status()
+        body = r.json()
+        members.extend(body.get("value", []))
+        url = body.get("@odata.nextLink")
+        params = {}  # nextLink already includes all query params
+    return members
+
+
+def graph_add_group_members_batch(token: str, group_id: str, user_ids: list[str]) -> None:
+    """Add users to a group; Graph allows up to 20 member bindings per PATCH."""
+    for i in range(0, len(user_ids), 20):
+        batch = user_ids[i : i + 20]
+        body = {"members@odata.bind": [f"{GRAPH}/users/{uid}" for uid in batch]}
+        r = _graph_request("PATCH", f"{GRAPH}/groups/{group_id}", token, json=body)
+        if r.status_code >= 400:
+            raise RuntimeError(
+                f"add members to group {group_id}: {r.status_code} {r.text[:200]}"
+            )
+
+
+def graph_remove_group_member(token: str, group_id: str, user_id: str) -> None:
+    r = _graph_request(
+        "DELETE", f"{GRAPH}/groups/{group_id}/members/{user_id}/$ref", token
+    )
+    if r.status_code >= 400:
+        raise RuntimeError(
+            f"remove {user_id} from group {group_id}: {r.status_code} {r.text[:200]}"
+        )
+
 # ---------- Diff & apply ----------
 
 def build_desired(emp: dict) -> dict:
@@ -240,6 +296,146 @@ def should_skip(upn: str) -> bool:
     u = upn.lower()
     return any(p in u for p in SKIP_UPN_PATTERNS)
 
+# ---------- Distribution List Sync ----------
+
+# Maps rule "field" values to Keka group extractors.
+_DL_FILTER_FIELDS: dict[str, Callable[[dict], Any]] = {
+    "department":    lambda e: _group(e, 2),
+    "location":      lambda e: _group(e, 3),
+    "business_unit": lambda e: _group(e, 1),
+    "cost_center":   lambda e: _group(e, 4),
+}
+
+
+def _emp_matches_dl_filter(emp: dict, rule_filter: Any) -> bool:
+    if rule_filter == "all":
+        return True
+    if isinstance(rule_filter, dict):
+        getter = _DL_FILTER_FIELDS.get(rule_filter.get("field", ""))
+        if getter:
+            emp_val = (getter(emp) or "").strip().lower()
+            target = rule_filter.get("value", "").strip().lower()
+            return emp_val == target
+    return False
+
+
+def sync_distribution_lists(
+    employees: list[dict], gtok: str, apply: bool, rules: list[dict]
+) -> tuple[int, int, int]:
+    """
+    Reconcile DL memberships against Keka employee data.
+
+    Safety contract: only Keka-known active employees are ever added or removed.
+    External contacts, guests, and non-Keka accounts already in a DL are left alone.
+
+    Returns (n_added, n_removed, n_failed).
+    """
+    active_emps = [
+        e for e in employees
+        if is_active(e) and not should_skip((e.get("email") or "").strip())
+    ]
+    keka_upns = {
+        (e.get("email") or "").strip().lower()
+        for e in active_emps
+        if e.get("email")
+    }
+
+    m365_id_cache: dict[str, str | None] = {}
+
+    def resolve_user_id(upn: str) -> str | None:
+        key = upn.lower()
+        if key not in m365_id_cache:
+            u = graph_get_user(gtok, upn)
+            m365_id_cache[key] = u["id"] if u else None
+        return m365_id_cache[key]
+
+    n_added = n_removed = n_failed = 0
+
+    for rule in rules:
+        dl_email = (rule.get("dl_email") or "").strip()
+        rule_filter = rule.get("filter", "all")
+        if not dl_email:
+            logging.warning("DL rule missing dl_email, skipping: %s", rule)
+            continue
+
+        logging.info("DL %-45s  filter=%s", dl_email, rule_filter)
+
+        group = graph_find_group(gtok, dl_email)
+        if not group:
+            logging.error("DL not found in M365: %s", dl_email)
+            n_failed += 1
+            continue
+
+        group_id = group["id"]
+        try:
+            current_members = graph_get_group_members(gtok, group_id)
+        except Exception as exc:
+            logging.error("DL %s: fetch members failed: %s", dl_email, exc)
+            n_failed += 1
+            continue
+
+        current_upns = {(m.get("userPrincipalName") or "").lower() for m in current_members}
+        current_id_by_upn = {
+            (m.get("userPrincipalName") or "").lower(): m["id"]
+            for m in current_members
+            if m.get("userPrincipalName") and m.get("id")
+        }
+
+        desired_upns = {
+            (e.get("email") or "").strip().lower()
+            for e in active_emps
+            if e.get("email") and _emp_matches_dl_filter(e, rule_filter)
+        }
+
+        to_add = desired_upns - current_upns
+        # Only remove Keka-managed employees who no longer match; externals/guests untouched.
+        to_remove = (current_upns & keka_upns) - desired_upns
+
+        logging.info(
+            "DL %s: current=%d desired=%d +%d -%d",
+            dl_email, len(current_upns), len(desired_upns), len(to_add), len(to_remove),
+        )
+
+        # Additions
+        if to_add:
+            ids_to_add: list[str] = []
+            for upn in sorted(to_add):
+                uid = resolve_user_id(upn)
+                if uid:
+                    ids_to_add.append(uid)
+                    logging.info("DL %s  ADD    %s", dl_email, upn)
+                else:
+                    logging.warning("DL %s  ADD    %s — not in M365, skipped", dl_email, upn)
+            if ids_to_add:
+                if apply:
+                    try:
+                        graph_add_group_members_batch(gtok, group_id, ids_to_add)
+                        n_added += len(ids_to_add)
+                    except RuntimeError as exc:
+                        logging.error("DL %s: add batch failed: %s", dl_email, exc)
+                        n_failed += 1
+                else:
+                    n_added += len(ids_to_add)
+
+        # Removals
+        for upn in sorted(to_remove):
+            uid = current_id_by_upn.get(upn)
+            if not uid:
+                logging.warning("DL %s  REMOVE %s — no member ID, skipped", dl_email, upn)
+                continue
+            logging.info("DL %s  REMOVE %s", dl_email, upn)
+            if apply:
+                try:
+                    graph_remove_group_member(gtok, group_id, uid)
+                    n_removed += 1
+                except RuntimeError as exc:
+                    logging.error("DL %s: remove %s failed: %s", dl_email, upn, exc)
+                    n_failed += 1
+            else:
+                n_removed += 1
+
+    return n_added, n_removed, n_failed
+
 # ---------- Main ----------
 
 def main() -> int:
@@ -248,6 +444,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="show diffs, do not write")
     ap.add_argument("--apply", action="store_true", help="actually write changes to M365")
     ap.add_argument("--only", help="restrict to one UPN (for testing)")
+    ap.add_argument("--dl-sync", action="store_true", help="also sync Distribution List memberships from dl_rules.json")
+    ap.add_argument("--dl-rules", default="dl_rules.json", metavar="FILE", help="DL rules JSON file (default: dl_rules.json)")
     ap.add_argument("--verbose", "-v", action="store_true")
     args = ap.parse_args()
 
@@ -255,6 +453,7 @@ def main() -> int:
 
     # CI safety: APPLY=true env var also enables writes (paired with workflow_dispatch input).
     apply = args.apply or os.environ.get("APPLY", "").lower() == "true"
+    mode = "APPLIED" if apply else "DRY-RUN"
     if not apply and not args.dry_run and not args.inspect:
         logging.info("No mode given - defaulting to --dry-run (use --apply to write)")
         args.dry_run = True
@@ -353,11 +552,34 @@ def main() -> int:
                 else:
                     n_mgr_changed += 1
 
-    mode = "APPLIED" if apply else "DRY-RUN"
     logging.info(
         "%s - matched=%d, attr-changes=%d, manager-changes=%d, skipped=%d, failed=%d",
         mode, n_match, n_changed, n_mgr_changed, n_skipped, n_failed,
     )
+
+    # Distribution List membership sync
+    dl_sync = args.dl_sync or os.environ.get("DL_SYNC", "").lower() == "true"
+    if dl_sync:
+        dl_rules_path = args.dl_rules
+        if not os.path.exists(dl_rules_path):
+            logging.error(
+                "DL rules file not found: %s  (copy dl_rules.example.json and edit it)",
+                dl_rules_path,
+            )
+            n_failed += 1
+        else:
+            with open(dl_rules_path) as f:
+                dl_rules = json.load(f)
+            logging.info("DL sync: %d rules loaded from %s", len(dl_rules), dl_rules_path)
+            n_dl_added, n_dl_removed, n_dl_failed = sync_distribution_lists(
+                employees, gtok, apply, dl_rules
+            )
+            logging.info(
+                "DL sync %s - added=%d, removed=%d, failed=%d",
+                mode, n_dl_added, n_dl_removed, n_dl_failed,
+            )
+            n_failed += n_dl_failed
+
     return 1 if n_failed else 0
 
 

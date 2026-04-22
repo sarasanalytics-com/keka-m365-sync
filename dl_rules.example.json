@@ -1,0 +1,27 @@
+[
+  {
+    "dl_email": "all-staff@yourdomain.com",
+    "filter": "all",
+    "description": "Every active employee"
+  },
+  {
+    "dl_email": "engineering@yourdomain.com",
+    "filter": { "field": "department", "value": "Engineering" },
+    "description": "Engineering department"
+  },
+  {
+    "dl_email": "bangalore@yourdomain.com",
+    "filter": { "field": "location", "value": "Bangalore" },
+    "description": "Bangalore office"
+  },
+  {
+    "dl_email": "technology-bu@yourdomain.com",
+    "filter": { "field": "business_unit", "value": "Technology" },
+    "description": "Technology business unit"
+  },
+  {
+    "dl_email": "shared-services-cc@yourdomain.com",
+    "filter": { "field": "cost_center", "value": "Shared Services" },
+    "description": "Shared Services cost centre"
+  }
+]
