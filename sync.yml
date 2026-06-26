@@ -1,9 +1,7 @@
-name: Keka to M365 sync
-
 on:
   schedule:
-    # 02:30 UTC weekly (Sunday) = 08:00 IST. Adjust as needed.
-    - cron: "30 2 * * 0"
+    # 02:00 UTC daily = 07:30 IST. Adjust as needed.
+    - cron: "0 2 * * *"  # ← Changed from "30 2 * * 0"
   workflow_dispatch:
     inputs:
       apply:
@@ -27,9 +25,6 @@ jobs:
       AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
       AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      # Scheduled runs: inputs.apply is null -> falsy -> APPLY=false (dry-run).
-      # Manual dispatch: inputs.apply is a real boolean respected by user's input.
-      APPLY: ${{ inputs.apply && 'true' || 'false' }}
 
     steps:
       - uses: actions/checkout@v6
@@ -43,8 +38,15 @@ jobs:
 
       - name: Run sync
         run: |
+          # For scheduled runs (cron): always use --apply
+          # For manual dispatch: respect the user's input
+          APPLY_FLAG=""
+          if [ "${{ github.event_name }}" == "schedule" ] || [ "${{ inputs.apply }}" == "true" ]; then
+            APPLY_FLAG="--apply"
+          fi
+          
           if [ -n "${{ inputs.only }}" ]; then
-            python sync.py --verbose --only "${{ inputs.only }}"
+            python sync.py --verbose --only "${{ inputs.only }}" $APPLY_FLAG
           else
-            python sync.py --verbose
+            python sync.py --verbose $APPLY_FLAG
           fi
