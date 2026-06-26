@@ -2,8 +2,8 @@ name: Keka to M365 sync
 
 on:
   schedule:
-    # 02:30 UTC daily = 08:00 IST. Adjust as needed.
-    - cron: "30 2 * * *"
+    # 07:30 IST daily = 02:00 UTC
+    - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
       apply:
@@ -27,8 +27,6 @@ jobs:
       AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
       AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-      # Scheduled runs: inputs.apply is null -> falsy -> APPLY=false (dry-run).
-      # Manual dispatch: inputs.apply is a real boolean respected by user's input.
       APPLY: ${{ inputs.apply && 'true' || 'false' }}
 
     steps:
